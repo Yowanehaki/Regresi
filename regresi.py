@@ -1,198 +1,197 @@
 # ========== IMPORT LIBRARY ==========
-# Library untuk manipulasi data dan visualisasi
+#100 EPOCHS
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
-
-# Library untuk preprocessing dan evaluasi model
-from sklearn.preprocessing import MinMaxScaler  # Untuk normalisasi data
+from sklearn.preprocessing import MinMaxScaler
 from sklearn.metrics import mean_absolute_error, r2_score, mean_absolute_percentage_error, mean_squared_error
-
-# Library untuk model SARIMAX (time series tradisional)
 from statsmodels.tsa.statespace.sarimax import SARIMAX
-
-# Library untuk deep learning model GRU
+from statsmodels.tsa.seasonal import seasonal_decompose
+from statsmodels.stats.diagnostic import acorr_ljungbox
 from tensorflow.keras.models import Sequential
 from tensorflow.keras.layers import GRU, Dense, Dropout, BatchNormalization
 from tensorflow.keras.optimizers import Adam
 from tensorflow.keras.callbacks import EarlyStopping, ReduceLROnPlateau
-
-# Mengabaikan warning untuk output yang lebih bersih
 import warnings
 warnings.filterwarnings('ignore')
 
 # ========== LOAD DAN EKSPLORASI DATA ==========
-# Memuat dataset penjualan fashion retail
 df = pd.read_csv('Fashion_Retail_Sales.csv')
-df.head()  # Melihat 5 baris pertama data
-
-df.info()  # Informasi struktur data (tipe data, missing values)
-
-df.describe(include="all")  # Statistik deskriptif untuk semua kolom
+df.head()
+df.info()
+df.describe(include="all")
 
 # ========== DATA CLEANING ==========
-# Menghapus baris yang memiliki nilai kosong pada kolom Purchase Amount
 df = df.dropna(subset=['Purchase Amount (USD)'])
-
-# Mengisi nilai kosong pada Review Rating dengan nilai rata-rata
 df['Review Rating'] = df['Review Rating'].fillna(df['Review Rating'].mean())
-
-# Mengkonversi kolom tanggal ke format datetime dan mengurutkan data
 df['Date Purchase'] = pd.to_datetime(df['Date Purchase'])
 df = df.sort_values('Date Purchase')
 
 # ========== PREPROCESSING DATA ==========
-# Mengubah data menjadi time series harian dengan agregasi:
-# - Purchase Amount: dijumlahkan per hari
-# - Item Purchased: dihitung jumlahnya per hari  
-# - Review Rating: dirata-ratakan per hari
 df_daily = df.set_index('Date Purchase').resample('D').agg({
     'Purchase Amount (USD)': 'sum',
     'Item Purchased': 'count',
     'Review Rating': 'mean'
 }).fillna(0)
 
-# Menghaluskan data dengan rolling average untuk mengurangi noise
-# Window=3 artinya rata-rata bergerak 3 hari
-df_daily['Purchase Amount (USD)'] = df_daily['Purchase Amount (USD)'].rolling(window=3, center=True).mean().fillna(df_daily['Purchase Amount (USD)'])
+# Rolling window diperpanjang untuk smoothing lebih halus
+df_daily['Purchase Amount (USD)'] = df_daily['Purchase Amount (USD)'].rolling(window=7, center=True).mean().fillna(df_daily['Purchase Amount (USD)'])
 
 # ========== NORMALISASI DATA ==========
-# Normalisasi data ke rentang 0-1 untuk training neural network
 scaler = MinMaxScaler(feature_range=(0, 1))
 scaled_values = scaler.fit_transform(df_daily[['Purchase Amount (USD)']])
 
 # ========== PERSIAPAN DATA UNTUK GRU ==========
-# Membuat sequences untuk supervised learning
-# n_steps = jumlah hari sebelumnya yang digunakan untuk prediksi
-n_steps = 45  # Menggunakan 45 hari sebelumnya untuk prediksi hari berikutnya
-X, y = [], []  # X = input sequences, y = target values
-
-# Loop untuk membuat sequences
+n_steps = 60  # Diperpanjang untuk capture pola jangka panjang
+X, y = [], []
 for i in range(n_steps, len(scaled_values)):
-    X.append(scaled_values[i-n_steps:i])  # 45 hari sebelumnya
-    y.append(scaled_values[i])  # hari yang akan diprediksi
+    X.append(scaled_values[i-n_steps:i])
+    y.append(scaled_values[i])
 X, y = np.array(X), np.array(y)
 
 # ========== TRAIN-TEST SPLIT ==========
-# Membagi data menjadi 80% training dan 20% testing
 train_size = int(len(df_daily) * 0.8)
-
-# Split untuk GRU model
 X_train, X_test = X[:train_size - n_steps], X[train_size - n_steps:]
 y_train, y_test = y[:train_size - n_steps], y[train_size - n_steps:]
 
-# Split untuk SARIMAX model (menggunakan data asli, bukan yang dinormalisasi)
 train_sarimax = df_daily['Purchase Amount (USD)'].iloc[:train_size]
 test_sarimax = df_daily['Purchase Amount (USD)'].iloc[train_size:]
 
-# ========== OPTIMASI MODEL SARIMAX ==========
+# ========== OPTIMASI MODEL SARIMAX YANG DIPERLUAS ==========
 print("Training Enhanced SARIMAX Model...")
 
-# Grid search untuk mencari parameter terbaik SARIMAX
-# Parameter order: (p,d,q) - autoregressive, differencing, moving average
-# Parameter seasonal_order: (P,D,Q,S) - seasonal components dengan periode S=7 hari
-best_aic = float('inf')  # AIC = Akaike Information Criterion (semakin kecil semakin baik)
-best_sarimax_model = None
+# Transformasi log untuk stabilisasi varian
+train_sarimax_log = np.log1p(train_sarimax)
+test_sarimax_log = np.log1p(test_sarimax)
 
-# Kombinasi parameter yang akan dicoba
+best_aic = float('inf')
+best_sarimax_model = None
+best_params = None
+
+# Parameter kombinasi yang lebih komprehensif dengan seasonal pattern
 param_combinations = [
-    ((1,1,1), (1,1,1,7)),  # Parameter dasar
-    ((2,1,2), (1,1,1,7)),  # Lebih kompleks di non-seasonal
-    ((1,1,2), (2,1,1,7)),  # Lebih kompleks di seasonal
-    ((2,1,1), (1,1,2,7)),  # Kombinasi lain
+    # Format: (order, seasonal_order)
+    ((0,1,1), (0,1,1,7)),    # Simple ARIMA dengan seasonal
+    ((0,1,2), (0,1,1,7)),    # MA model
+    ((1,1,0), (1,1,0,7)),    # AR model
+    ((1,1,1), (1,1,1,7)),    # Basic ARIMA
+    ((2,1,1), (1,1,1,7)),    # Extended AR
+    ((1,1,2), (1,1,1,7)),    # Extended MA
+    ((2,1,2), (1,1,1,7)),    # Extended ARIMA
+    ((1,1,1), (2,1,1,7)),    # Extended seasonal AR
+    ((1,1,1), (1,1,2,7)),    # Extended seasonal MA
+    ((2,1,2), (2,1,2,7)),    # Complex model
+    ((3,1,2), (1,1,1,7)),    # Higher order AR
+    ((2,1,3), (1,1,1,7)),    # Higher order MA
+    ((1,1,1), (0,1,1,14)),   # Bi-weekly seasonality
+    ((2,1,2), (1,1,1,14)),   # Bi-weekly with complex ARIMA
+    ((1,1,1), (1,1,1,30)),   # Monthly seasonality
 ]
 
-# Mencoba setiap kombinasi parameter
-for order, seasonal_order in param_combinations:
+print("Searching for best SARIMAX parameters...")
+for i, (order, seasonal_order) in enumerate(param_combinations):
     try:
-        temp_model = SARIMAX(train_sarimax, order=order, seasonal_order=seasonal_order)
-        temp_result = temp_model.fit(maxiter=500, method='lbfgs', disp=False)
-        # Simpan model dengan AIC terkecil
+        temp_model = SARIMAX(
+            train_sarimax_log, 
+            order=order, 
+            seasonal_order=seasonal_order,
+            enforce_stationarity=False, 
+            enforce_invertibility=False,
+            trend='c'  # Include constant
+        )
+        temp_result = temp_model.fit(
+            maxiter=1000, 
+            method='lbfgs', 
+            disp=False,
+            low_memory=True
+        )
+        
         if temp_result.aic < best_aic:
             best_aic = temp_result.aic
             best_sarimax_model = temp_result
-    except:
-        continue  # Skip jika ada error dalam fitting
+            best_params = (order, seasonal_order)
+            print(f"New best AIC: {best_aic:.2f} with params {order}, {seasonal_order}")
+            
+    except Exception as e:
+        continue
 
-# Jika tidak ada model yang berhasil, gunakan parameter default
+# Fallback model jika tidak ada yang berhasil
 if best_sarimax_model is None:
-    sarimax_model = SARIMAX(train_sarimax, order=(1,1,1), seasonal_order=(1,1,1,7))
-    sarimax_result = sarimax_model.fit(maxiter=500, method='lbfgs', disp=False)
+    print("Using fallback SARIMAX model...")
+    sarimax_model = SARIMAX(
+        train_sarimax_log, 
+        order=(1,1,1), 
+        seasonal_order=(1,1,1,7),
+        trend='c'
+    )
+    sarimax_result = sarimax_model.fit(maxiter=1000, disp=False)
+    best_params = ((1,1,1), (1,1,1,7))
 else:
     sarimax_result = best_sarimax_model
 
-# Membuat prediksi untuk periode test
-sarimax_pred = sarimax_result.get_forecast(steps=len(test_sarimax)).predicted_mean
+print(f"Best SARIMAX parameters: {best_params}")
+print(f"Final AIC: {sarimax_result.aic:.2f}")
+
+# Prediksi dengan confidence interval
+forecast_result = sarimax_result.get_forecast(steps=len(test_sarimax))
+sarimax_pred_log = forecast_result.predicted_mean
+sarimax_pred_ci = forecast_result.conf_int()
+
+# Inverse transform dari log
+sarimax_pred = np.expm1(sarimax_pred_log)
+sarimax_pred_lower = np.expm1(sarimax_pred_ci.iloc[:, 0])
+sarimax_pred_upper = np.expm1(sarimax_pred_ci.iloc[:, 1])
+
+# Clipping untuk menghindari nilai negatif
+sarimax_pred = np.maximum(sarimax_pred, 0)
 
 # ========== MEMBANGUN MODEL GRU ==========
 print("Training Enhanced GRU Model...")
 
-# Arsitektur neural network dengan 3 layer GRU
 model = Sequential([
-    # Layer GRU pertama: 128 units, return sequences untuk layer berikutnya
-    GRU(128, return_sequences=True, input_shape=(n_steps, 1), 
-        dropout=0.2, recurrent_dropout=0.2),  # Dropout untuk mencegah overfitting
-    
-    # Batch normalization untuk stabilitas training
+    GRU(128, return_sequences=True, input_shape=(n_steps, 1),
+        dropout=0.3, recurrent_dropout=0.2),
     BatchNormalization(),
-    
-    # Layer GRU kedua: 64 units
-    GRU(64, return_sequences=True, dropout=0.2, recurrent_dropout=0.2),
+    GRU(64, return_sequences=True,
+        dropout=0.3, recurrent_dropout=0.2),
     BatchNormalization(),
-    
-    # Layer GRU ketiga: 32 units, tidak return sequences
-    GRU(32, dropout=0.2, recurrent_dropout=0.2),
-    
-    # Dense layer untuk pemrosesan akhir
-    Dense(16, activation='relu'),
-    Dropout(0.3),  # Dropout rate lebih tinggi
-    
-    # Output layer
-    Dense(1)  # 1 output untuk prediksi nilai tunggal
+    GRU(32,
+        dropout=0.3, recurrent_dropout=0.2),
+    Dense(32, activation='relu'),
+    Dropout(0.4),
+    Dense(1)
 ])
 
-# Optimizer dengan learning rate yang disesuaikan
-optimizer = Adam(learning_rate=0.001)
-
-# Compile model dengan loss function Huber (robust terhadap outliers)
+optimizer = Adam(learning_rate=0.0005)
 model.compile(optimizer=optimizer, loss='huber', metrics=['mae'])
 
 # ========== CALLBACK FUNCTIONS ==========
-# Early stopping: berhenti training jika tidak ada improvement
-early_stopping = EarlyStopping(monitor='val_loss', patience=10, restore_best_weights=True)
-
-# Learning rate scheduler: kurangi learning rate jika stuck
-reduce_lr = ReduceLROnPlateau(monitor='val_loss', factor=0.5, patience=5, min_lr=1e-7)
+early_stopping = EarlyStopping(monitor='val_loss', patience=15, restore_best_weights=True)
+reduce_lr = ReduceLROnPlateau(monitor='val_loss', factor=0.3, patience=7, min_lr=1e-7)
 
 # ========== TRAINING MODEL GRU ==========
-# Training dengan 30 epochs dan validation split
 history = model.fit(
-    X_train, y_train, 
-    epochs=30,  # Jumlah epoch training
-    batch_size=32,  # Ukuran batch untuk gradient update
-    validation_split=0.2,  # 20% dari training data untuk validasi
-    callbacks=[early_stopping, reduce_lr],  # Callback functions
-    verbose=1  # Tampilkan progress training
+    X_train, y_train,
+    epochs=30,
+    batch_size=16,
+    validation_split=0.2,
+    callbacks=[early_stopping, reduce_lr],
+    verbose=1
 )
 
 # ========== PREDIKSI DAN INVERSE TRANSFORM ==========
-# Melakukan prediksi pada data test
 y_pred_gru = model.predict(X_test)
-
-# Mengembalikan hasil prediksi ke skala asli (denormalisasi)
 y_pred_gru_inv = scaler.inverse_transform(y_pred_gru)
 y_test_inv = scaler.inverse_transform(y_test)
 
 # ========== EVALUASI MODEL SARIMAX ==========
-# Menghitung berbagai metrik evaluasi untuk SARIMAX
-mae_sarimax = mean_absolute_error(test_sarimax, sarimax_pred)  # Mean Absolute Error
-mape_sarimax = mean_absolute_percentage_error(test_sarimax, sarimax_pred) * 100  # Mean Absolute Percentage Error
-r2_sarimax = r2_score(test_sarimax, sarimax_pred)  # R-squared Score
-mse_sarimax = mean_squared_error(test_sarimax, sarimax_pred)  # Mean Squared Error
-rmse_sarimax = np.sqrt(mse_sarimax)  # Root Mean Squared Error
+mae_sarimax = mean_absolute_error(test_sarimax, sarimax_pred)
+mape_sarimax = mean_absolute_percentage_error(test_sarimax, sarimax_pred) * 100
+r2_sarimax = r2_score(test_sarimax, sarimax_pred)
+mse_sarimax = mean_squared_error(test_sarimax, sarimax_pred)
+rmse_sarimax = np.sqrt(mse_sarimax)
 
 # ========== EVALUASI MODEL GRU ==========
-# Menghitung berbagai metrik evaluasi untuk GRU
 mae_gru = mean_absolute_error(y_test_inv, y_pred_gru_inv)
 mape_gru = mean_absolute_percentage_error(y_test_inv, y_pred_gru_inv) * 100
 r2_gru = r2_score(y_test_inv, y_pred_gru_inv)
@@ -201,10 +200,10 @@ rmse_gru = np.sqrt(mse_gru)
 
 # ========== MENAMPILKAN HASIL EVALUASI ==========
 print("=== Enhanced SARIMAX Evaluation ===")
-print(f"RMSE  : {rmse_sarimax:.2f}")  # Semakin kecil semakin baik
-print(f"MAE   : {mae_sarimax:.2f}")   # Semakin kecil semakin baik
-print(f"MAPE  : {mape_sarimax:.2f}%") # Semakin kecil semakin baik
-print(f"R2    : {r2_sarimax:.4f}")    # Semakin besar semakin baik (max=1)
+print(f"RMSE  : {rmse_sarimax:.2f}")
+print(f"MAE   : {mae_sarimax:.2f}")
+print(f"MAPE  : {mape_sarimax:.2f}%")
+print(f"R2    : {r2_sarimax:.4f}")
 
 print("\n=== Enhanced GRU Evaluation ===")
 print(f"RMSE  : {rmse_gru:.2f}")
@@ -212,77 +211,72 @@ print(f"MAE   : {mae_gru:.2f}")
 print(f"MAPE  : {mape_gru:.2f}%")
 print(f"R2    : {r2_gru:.4f}")
 
-# ========== VISUALISASI 1: PERBANDINGAN PREDIKSI ==========
-# Plot untuk membandingkan prediksi kedua model dengan data aktual
-plt.figure(figsize=(14,6))
+# ========== DIAGNOSTIC TESTS UNTUK SARIMAX ==========
+print("\n=== SARIMAX Model Diagnostics ===")
+residuals = sarimax_result.resid
+print(f"Residuals Mean: {residuals.mean():.4f}")
+print(f"Residuals Std: {residuals.std():.4f}")
 
-# Plot data aktual
-plt.plot(test_sarimax.index, test_sarimax, label='Actual', 
-         linewidth=2.5, color='black')
+# Ljung-Box test untuk autocorrelation residuals
+lb_test = acorr_ljungbox(residuals, lags=10, return_df=True)
+print(f"Ljung-Box p-value (lag 10): {lb_test['lb_pvalue'].iloc[-1]:.4f}")
+if lb_test['lb_pvalue'].iloc[-1] > 0.05:
+    print("✓ Residuals appear to be uncorrelated (good)")
+else:
+    print("⚠ Residuals may have autocorrelation")
 
-# Plot prediksi SARIMAX
-plt.plot(test_sarimax.index, sarimax_pred, label='SARIMAX', 
-         linewidth=2, color='blue', alpha=0.8)
-
-# Plot prediksi GRU (hanya untuk periode yang sama dengan SARIMAX)
-plt.plot(test_sarimax.index[-len(y_pred_gru):], y_pred_gru_inv, 
-         label='GRU', linewidth=2, color='green', alpha=0.8)
-
-plt.title("Perbandingan Prediksi SARIMAX vs GRU", fontsize=16, fontweight='bold')
+# ========== VISUALISASI 1: PERBANDINGAN PREDIKSI DENGAN CONFIDENCE INTERVAL ==========
+plt.figure(figsize=(16,8))
+plt.plot(test_sarimax.index, test_sarimax, label='Actual', linewidth=2.5, color='black')
+plt.plot(test_sarimax.index, sarimax_pred, label='SARIMAX', linewidth=2, color='blue', alpha=0.8)
+plt.fill_between(test_sarimax.index, sarimax_pred_lower, sarimax_pred_upper, 
+                 color='blue', alpha=0.2, label='SARIMAX 95% CI')
+plt.plot(test_sarimax.index[-len(y_pred_gru):], y_pred_gru_inv, label='GRU', linewidth=2, color='green', alpha=0.8)
+plt.title("Perbandingan Prediksi SARIMAX vs GRU (Optimized)", fontsize=16, fontweight='bold')
 plt.xlabel("Tanggal")
 plt.ylabel("Jumlah Pembelian (USD)")
 plt.legend()
-plt.grid(True, alpha=0.3)  # Grid dengan transparansi
-plt.xticks(rotation=45)  # Rotasi label tanggal
+plt.grid(True, alpha=0.3)
+plt.xticks(rotation=45)
 plt.tight_layout()
 plt.show()
 
 # ========== VISUALISASI 2: BAR CHART PERFORMA ==========
-# Membuat bar chart untuk perbandingan metrik evaluasi
 plt.figure(figsize=(10, 6))
-
-# Data untuk bar chart
 metrics = ['RMSE', 'MAE', 'MAPE (%)', 'R² Score']
-sarimax_values = [rmse_sarimax, mae_sarimax, mape_sarimax, r2_sarimax*100]  # R2 dikali 100 untuk skala
+sarimax_values = [rmse_sarimax, mae_sarimax, mape_sarimax, r2_sarimax*100]
 gru_values = [rmse_gru, mae_gru, mape_gru, r2_gru*100]
-
-# Posisi bar
 x = np.arange(len(metrics))
 width = 0.35
 
-# Membuat bar chart
-bars1 = plt.bar(x - width/2, sarimax_values, width, label='SARIMAX', color='blue', alpha=0.7)
+bars1 = plt.bar(x - width/2, sarimax_values, width, label='SARIMAX (Optimized)', color='blue', alpha=0.7)
 bars2 = plt.bar(x + width/2, gru_values, width, label='GRU', color='green', alpha=0.7)
 
-# Menambahkan label nilai pada setiap bar
 for i, (bar1, bar2) in enumerate(zip(bars1, bars2)):
-    if i == 3:  # R² score (perlu dibagi 100 untuk tampilan)
-        plt.text(bar1.get_x() + bar1.get_width()/2, bar1.get_height() + 0.5, 
-                f'{sarimax_values[i]/100:.3f}', ha='center', va='bottom', fontweight='bold')
-        plt.text(bar2.get_x() + bar2.get_width()/2, bar2.get_height() + 0.5, 
-                f'{gru_values[i]/100:.3f}', ha='center', va='bottom', fontweight='bold')
+    if i == 3:
+        plt.text(bar1.get_x() + bar1.get_width()/2, bar1.get_height() + 0.5,
+                 f'{sarimax_values[i]/100:.3f}', ha='center', va='bottom', fontweight='bold')
+        plt.text(bar2.get_x() + bar2.get_width()/2, bar2.get_height() + 0.5,
+                 f'{gru_values[i]/100:.3f}', ha='center', va='bottom', fontweight='bold')
     else:
-        plt.text(bar1.get_x() + bar1.get_width()/2, bar1.get_height() + 0.5, 
-                f'{sarimax_values[i]:.1f}', ha='center', va='bottom', fontweight='bold')
-        plt.text(bar2.get_x() + bar2.get_width()/2, bar2.get_height() + 0.5, 
-                f'{gru_values[i]:.1f}', ha='center', va='bottom', fontweight='bold')
+        plt.text(bar1.get_x() + bar1.get_width()/2, bar1.get_height() + 0.5,
+                 f'{sarimax_values[i]:.1f}', ha='center', va='bottom', fontweight='bold')
+        plt.text(bar2.get_x() + bar2.get_width()/2, bar2.get_height() + 0.5,
+                 f'{gru_values[i]:.1f}', ha='center', va='bottom', fontweight='bold')
 
-plt.title('Perbandingan Performa Model SARIMAX vs GRU', fontsize=16, fontweight='bold')
+plt.title('Perbandingan Performa Model SARIMAX vs GRU (Optimized)', fontsize=16, fontweight='bold')
 plt.xlabel('Metrik Evaluasi')
 plt.ylabel('Nilai')
 plt.xticks(x, metrics)
 plt.legend()
 plt.grid(True, alpha=0.3, axis='y')
-
-# Catatan interpretasi metrik
-plt.figtext(0.5, 0.02, 
-           'Catatan: Untuk RMSE, MAE, MAPE → semakin kecil semakin baik | Untuk R² → semakin besar semakin baik', 
+plt.figtext(0.5, 0.02,
+           'Catatan: Untuk RMSE, MAE, MAPE → semakin kecil semakin baik | Untuk R² → semakin besar semakin baik',
            ha='center', fontsize=10, style='italic')
 plt.tight_layout()
 plt.show()
 
 # ========== RINGKASAN PERFORMA ==========
-# Menampilkan ringkasan model mana yang lebih baik
 print(f"\n{'='*50}")
 print("RINGKASAN PERFORMA:")
 print(f"{'='*50}")
@@ -290,4 +284,5 @@ better_rmse = "SARIMAX" if rmse_sarimax < rmse_gru else "GRU"
 better_r2 = "SARIMAX" if r2_sarimax > r2_gru else "GRU"
 print(f"Model dengan RMSE terbaik: {better_rmse}")
 print(f"Model dengan R² terbaik: {better_r2}")
+print(f"Improvement SARIMAX: Using best params {best_params}")
 print(f"{'='*50}")
