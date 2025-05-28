@@ -7,7 +7,6 @@ from sklearn.preprocessing import MinMaxScaler
 from sklearn.metrics import mean_absolute_error, r2_score, mean_absolute_percentage_error, mean_squared_error
 from statsmodels.tsa.statespace.sarimax import SARIMAX
 from statsmodels.tsa.seasonal import seasonal_decompose
-from statsmodels.stats.diagnostic import acorr_ljungbox
 from tensorflow.keras.models import Sequential
 from tensorflow.keras.layers import GRU, Dense, Dropout, BatchNormalization
 from tensorflow.keras.optimizers import Adam
@@ -53,7 +52,6 @@ X, y = np.array(X), np.array(y)
 train_size = int(len(df_daily) * 0.8)
 X_train, X_test = X[:train_size - n_steps], X[train_size - n_steps:]
 y_train, y_test = y[:train_size - n_steps], y[train_size - n_steps:]
-
 train_sarimax = df_daily['Purchase Amount (USD)'].iloc[:train_size]
 test_sarimax = df_daily['Purchase Amount (USD)'].iloc[train_size:]
 
@@ -63,14 +61,12 @@ print("Training Enhanced SARIMAX Model...")
 # Transformasi log untuk stabilisasi varian
 train_sarimax_log = np.log1p(train_sarimax)
 test_sarimax_log = np.log1p(test_sarimax)
-
 best_aic = float('inf')
 best_sarimax_model = None
 best_params = None
 
 # Parameter kombinasi yang lebih komprehensif dengan seasonal pattern
 param_combinations = [
-    # Format: (order, seasonal_order)
     ((0,1,1), (0,1,1,7)),    # Simple ARIMA dengan seasonal
     ((0,1,2), (0,1,1,7)),    # MA model
     ((1,1,0), (1,1,0,7)),    # AR model
@@ -105,13 +101,11 @@ for i, (order, seasonal_order) in enumerate(param_combinations):
             disp=False,
             low_memory=True
         )
-        
         if temp_result.aic < best_aic:
             best_aic = temp_result.aic
             best_sarimax_model = temp_result
             best_params = (order, seasonal_order)
             print(f"New best AIC: {best_aic:.2f} with params {order}, {seasonal_order}")
-            
     except Exception as e:
         continue
 
@@ -204,26 +198,11 @@ print(f"RMSE  : {rmse_sarimax:.2f}")
 print(f"MAE   : {mae_sarimax:.2f}")
 print(f"MAPE  : {mape_sarimax:.2f}%")
 print(f"R2    : {r2_sarimax:.4f}")
-
 print("\n=== Enhanced GRU Evaluation ===")
 print(f"RMSE  : {rmse_gru:.2f}")
 print(f"MAE   : {mae_gru:.2f}")
 print(f"MAPE  : {mape_gru:.2f}%")
 print(f"R2    : {r2_gru:.4f}")
-
-# ========== DIAGNOSTIC TESTS UNTUK SARIMAX ==========
-print("\n=== SARIMAX Model Diagnostics ===")
-residuals = sarimax_result.resid
-print(f"Residuals Mean: {residuals.mean():.4f}")
-print(f"Residuals Std: {residuals.std():.4f}")
-
-# Ljung-Box test untuk autocorrelation residuals
-lb_test = acorr_ljungbox(residuals, lags=10, return_df=True)
-print(f"Ljung-Box p-value (lag 10): {lb_test['lb_pvalue'].iloc[-1]:.4f}")
-if lb_test['lb_pvalue'].iloc[-1] > 0.05:
-    print("✓ Residuals appear to be uncorrelated (good)")
-else:
-    print("⚠ Residuals may have autocorrelation")
 
 # ========== VISUALISASI 1: PERBANDINGAN PREDIKSI DENGAN CONFIDENCE INTERVAL ==========
 plt.figure(figsize=(16,8))
