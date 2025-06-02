@@ -213,18 +213,57 @@ print(f"MAE   : {mae_gru:.2f}")
 print(f"MAPE  : {mape_gru:.2f}%")
 print(f"R2    : {r2_gru:.4f}")
 
-# ========== VISUALISASI 1: PERBANDINGAN PREDIKSI DENGAN CONFIDENCE INTERVAL ==========
+# ========== VISUALISASI HASIL PREDIKSI ==========
+# Plot 1: SARIMAX Prediction
+plt.figure(figsize=(15,7))
+plt.plot(test_data.index, actual_test, label='Actual', linewidth=2, color='black')
+plt.plot(test_data.index, sarimax_pred, label='SARIMAX Prediction', linewidth=2, color='blue', alpha=0.8)
+plt.fill_between(test_data.index, sarimax_pred_lower, sarimax_pred_upper, 
+                 color='blue', alpha=0.1, label='SARIMAX 95% CI')
+plt.title('SARIMAX Model Prediction Results', fontsize=16, fontweight='bold')
+plt.xlabel('Date')
+plt.ylabel('Purchase Amount (USD)')
+plt.legend(loc='upper left')
+plt.grid(True, alpha=0.3)
+plt.xticks(rotation=45)
+plt.text(0.02, 0.95, f'RMSE: {rmse_sarimax:.2f}\nR²: {r2_sarimax:.4f}', 
+         transform=plt.gca().transAxes, bbox=dict(facecolor='white', alpha=0.8))
+plt.tight_layout()
+plt.show()
+
+# Plot 2: GRU Prediction
+plt.figure(figsize=(15,7))
+plt.plot(test_data.index[-len(y_pred_gru_inv):], y_test_inv, 
+         label='Actual', linewidth=2, color='black')
+plt.plot(test_data.index[-len(y_pred_gru_inv):], y_pred_gru_inv, 
+         label='GRU Prediction', linewidth=2, color='green', alpha=0.8)
+plt.title('GRU Model Prediction Results', fontsize=16, fontweight='bold')
+plt.xlabel('Date')
+plt.ylabel('Purchase Amount (USD)')
+plt.legend(loc='upper left')
+plt.grid(True, alpha=0.3)
+plt.xticks(rotation=45)
+plt.text(0.02, 0.95, f'RMSE: {rmse_gru:.2f}\nR²: {r2_gru:.4f}', 
+         transform=plt.gca().transAxes, bbox=dict(facecolor='white', alpha=0.8))
+plt.tight_layout()
+plt.show()
+
+# Plot 3: Combined Predictions
 plt.figure(figsize=(15,7))
 plt.plot(test_data.index, actual_test, label='Actual', linewidth=2, color='black')
 plt.plot(test_data.index, sarimax_pred, label='SARIMAX', linewidth=2, color='blue', alpha=0.8)
-plt.fill_between(test_data.index, sarimax_pred_lower, sarimax_pred_upper, color='blue', alpha=0.1, label='SARIMAX 95% CI')
-plt.plot(test_data.index[-len(y_pred_gru_inv):], y_pred_gru_inv, label='GRU', linewidth=2, color='green', alpha=0.8)
-plt.title('Perbandingan Prediksi SARIMAX vs GRU (Optimized)', fontsize=16, fontweight='bold')
-plt.xlabel('Tanggal')
-plt.ylabel('Jumlah Pembelian (USD)')
-plt.legend()
+plt.plot(test_data.index[-len(y_pred_gru_inv):], y_pred_gru_inv, 
+         label='GRU', linewidth=2, color='green', alpha=0.8)
+plt.title('Comparison of SARIMAX and GRU Predictions', fontsize=16, fontweight='bold')
+plt.xlabel('Date')
+plt.ylabel('Purchase Amount (USD)')
+plt.legend(loc='upper left')
 plt.grid(True, alpha=0.3)
 plt.xticks(rotation=45)
+text = f'SARIMAX Metrics:\nRMSE: {rmse_sarimax:.2f}\nR²: {r2_sarimax:.4f}\n\n'
+text += f'GRU Metrics:\nRMSE: {rmse_gru:.2f}\nR²: {r2_gru:.4f}'
+plt.text(0.02, 0.85, text, transform=plt.gca().transAxes, 
+         bbox=dict(facecolor='white', alpha=0.8))
 plt.tight_layout()
 plt.show()
 
