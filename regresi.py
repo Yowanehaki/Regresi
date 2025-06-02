@@ -73,7 +73,7 @@ test_exog = test_data[exog_columns]
 gru_features = ['Purchase Amount (USD)'] + exog_columns
 gru_data = df_daily[gru_features].values
 
-n_steps = 60
+n_steps = 14
 X, y = [], []
 for i in range(n_steps, len(gru_data)):
     X.append(gru_data[i-n_steps:i])
