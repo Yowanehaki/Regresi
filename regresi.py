@@ -309,3 +309,55 @@ print(f"Model dengan RMSE terbaik: {better_rmse}")
 print(f"Model dengan R² terbaik: {better_r2}")
 print(f"Improvement SARIMAX: Using best params {best_params}")
 print(f"{'='*50}")
+
+# ========== TAMPILKAN 37 HARI TERAKHIR ==========
+print("\nPrediksi 37 Hari Terakhir:")
+print("================================")
+print("Tanggal            Actual      SARIMAX     GRU")
+print("------------------------------------------------")
+# Get the minimum length to avoid index out of bounds
+min_len = min(len(actual_test[-37:]), len(sarimax_pred[-37:]), len(y_pred_gru_inv[-37:]))
+for i in range(min_len):
+    date = test_data.index[-min_len:][i].strftime('%Y-%m-%d')
+    actual = actual_test[-min_len:][i]
+    sarimax = sarimax_pred[-min_len:][i]
+    gru = y_pred_gru_inv[-min_len:][i][0]
+    print(f"{date}  {actual:9.2f}  {sarimax:9.2f}  {gru:9.2f}")
+
+print(f"\nNote: Showing last {min_len} days of predictions")
+
+# ========== PREDIKSI 7 HARI KE DEPAN ==========
+# Persiapkan data untuk prediksi SARIMAX
+last_date = test_data.index[-1]
+future_dates = pd.date_range(start=last_date + pd.Timedelta(days=1), periods=7, freq='D')
+future_exog = pd.DataFrame(index=future_dates, columns=exog_columns)
+
+# Copy pola dari minggu terakhir untuk exogenous features
+for col in exog_columns:
+    future_exog[col] = df_daily[col].iloc[-7:].values
+
+# Prediksi SARIMAX
+future_sarimax = best_sarimax_model.get_forecast(steps=7, exog=future_exog)
+future_pred_sarimax = scaler.inverse_transform(future_sarimax.predicted_mean.values.reshape(-1,1)).flatten()
+
+# Prediksi GRU
+last_sequence = X_test[-1]
+future_pred_gru = []
+for i in range(7):
+    next_pred = model.predict(last_sequence.reshape(1, n_steps, -1))
+    future_pred_gru.append(next_pred[0][0])
+    # Update sequence untuk prediksi berikutnya
+    last_sequence = np.roll(last_sequence, -1, axis=0)
+    last_sequence[-1] = np.append(next_pred[0], last_sequence[-1][1:])
+
+future_pred_gru = scaler.inverse_transform(np.array(future_pred_gru).reshape(-1,1)).flatten()
+
+print("\nPrediksi 7 Hari Ke Depan:")
+print("================================")
+print("Tanggal            SARIMAX     GRU")
+print("----------------------------------------")
+for i in range(7):
+    date = future_dates[i].strftime('%Y-%m-%d')
+    sarimax = future_pred_sarimax[i]
+    gru = future_pred_gru[i]
+    print(f"{date}  {sarimax:9.2f}  {gru:9.2f}")
